@@ -6,6 +6,7 @@ import random
 import numpy as np
 import torch.utils.data as data
 from PIL import Image
+import PIL
 import torchvision.transforms as transforms
 from abc import ABC, abstractmethod
 
@@ -102,6 +103,9 @@ def get_transform(opt, params=None, grayscale=False, method=Image.BICUBIC, conve
             transform_list.append(transforms.RandomHorizontalFlip())
         elif params['flip']:
             transform_list.append(transforms.Lambda(lambda img: __flip(img, params['flip'])))
+
+    transform_list.append(transforms.RandomRotation(20, resample=PIL.Image.BILINEAR))
+    print("-----------------transform RandomRotation Added-------------------------")
 
     if convert:
         transform_list += [transforms.ToTensor()]

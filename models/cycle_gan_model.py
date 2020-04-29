@@ -7,6 +7,18 @@ import torch.nn as nn
 from .networks import get_norm_layer
 import functools
 
+class VGG16_BN(nn.Module):
+    def __init__(self, original_model):
+        super(VGG16_BN, self).__init__()
+        print(len(list(original_model.children())))
+        print(list(original_model.children()))
+        self.base = list(original_model.children())[0]
+        self.features = nn.Sequential(*list(self.base.children())[:6])
+
+    def forward(self, x):
+        x = self.features(x)
+        return x
+
 class CycleGANModel(BaseModel):
     """
     This class implements the CycleGAN model, for learning image-to-image translation without paired data.
@@ -43,6 +55,8 @@ class CycleGANModel(BaseModel):
             parser.add_argument('--lambda_A', type=float, default=10.0, help='weight for cycle loss (A -> B -> A)')
             parser.add_argument('--lambda_B', type=float, default=10.0, help='weight for cycle loss (B -> A -> B)')
             parser.add_argument('--lambda_identity', type=float, default=0.5, help='use identity mapping. Setting lambda_identity other than 0 has an effect of scaling the weight of the identity mapping loss. For example, if the weight of the identity loss should be 10 times smaller than the weight of the reconstruction loss, please set lambda_identity = 0.1')
+            parser.add_argument('--wGA', type=float, default=1, help='weight for GA loss (A -> B)')
+            parser.add_argument('--wGB', type=float, default=1, help='weight for GA loss (B -> A)')
 
         return parser
 
@@ -76,10 +90,23 @@ class CycleGANModel(BaseModel):
         else:
             use_bias = norm_layer == nn.InstanceNorm2d
 
-        model = [nn.ReflectionPad2d(3),
-                 nn.Conv2d(opt.input_nc, opt.ngf, kernel_size=7, padding=0, bias=use_bias),
+        vgg_model = torch.hub.load('pytorch/vision:v0.5.0', 'vgg16_bn', pretrained=True)
+        self.vgg_bottom = VGG16_BN(vgg_model)
+        self.vgg_bottom.eval()
+        
+        model = []
+        for layer in self.vgg_bottom.features.children():
+            for param in layer.parameters():
+                param.requires_grad = False
+
+            model.append(layer)
+
+        ################################ DANGER ###############################
+        model += [nn.ReflectionPad2d(3),
+                 nn.Conv2d(64, opt.ngf, kernel_size=7, padding=0, bias=use_bias),
                  norm_layer(opt.ngf),
                  nn.ReLU(True)]
+
         shared_base = nn.Sequential(*model)
 
         # define networks (both Generators and discriminators)
@@ -112,7 +139,7 @@ class CycleGANModel(BaseModel):
                                         not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
         self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm,
                                         not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
-                                        
+
         # define discriminators
         self.netD_A = networks.define_D(opt.output_nc, opt.ndf, opt.netD,
                                         opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
@@ -221,7 +248,7 @@ class CycleGANModel(BaseModel):
         # Backward cycle loss || G_A(G_B(B)) - B||
         self.loss_cycle_B = self.criterionCycle(self.rec_B, self.real_B) * lambda_B
         # combined loss and calculate gradients
-        self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B
+        self.loss_G = self.opt.wGA * self.loss_G_A + self.opt.wGB * self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B
         self.loss_G.backward()
 
     def optimize_parameters(self):

@@ -3,7 +3,9 @@ import itertools
 from util.image_pool import ImagePool
 from .base_model import BaseModel
 from . import networks
-
+import torch.nn as nn
+from .networks import get_norm_layer
+import functools
 
 class CycleGANModel(BaseModel):
     """
@@ -67,6 +69,42 @@ class CycleGANModel(BaseModel):
         else:  # during test time, only load Gs
             self.model_names = ['G_A', 'G_B']
 
+        ######################### DANGER ZONE ##################################
+        norm_layer = get_norm_layer(norm_type=opt.norm)
+        if type(norm_layer) == functools.partial:
+            use_bias = norm_layer.func == nn.InstanceNorm2d
+        else:
+            use_bias = norm_layer == nn.InstanceNorm2d
+
+        model = [nn.ReflectionPad2d(3),
+                 nn.Conv2d(opt.input_nc, opt.ngf, kernel_size=7, padding=0, bias=use_bias),
+                 norm_layer(opt.ngf),
+                 nn.ReLU(True)]
+        shared_base = nn.Sequential(*model)
+
+        # define networks (both Generators and discriminators)
+        # The naming is different from those used in the paper.
+        # Code (vs. paper): G_A (G), G_B (F), D_A (D_Y), D_B (D_X)
+        self.netG_A = networks.define_GShared(shared_base, opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm,
+                                        not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
+        self.netG_B = networks.define_GShared(shared_base, opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm,
+                                        not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
+
+        ######################### END OF DANGER ZONE ##################################
+
+        ######################### DANGER ZONE 2 ##################################
+        kw = 4
+        padw = 1
+        nf_mult_prev = min(2 ** (opt.n_layers_D-1), 8)
+        nf_mult = min(2 ** opt.n_layers_D, 8)
+
+        base_dis = [nn.Conv2d(opt.ndf * nf_mult_prev, opt.ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
+                    norm_layer(opt.ndf * nf_mult),
+                    nn.LeakyReLU(0.2, True),
+                    nn.Conv2d(opt.ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]
+        shared_base = nn.Sequential(*base_dis)
+
+        '''
         # define networks (both Generators and discriminators)
         # The naming is different from those used in the paper.
         # Code (vs. paper): G_A (G), G_B (F), D_A (D_Y), D_B (D_X)
@@ -74,12 +112,21 @@ class CycleGANModel(BaseModel):
                                         not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
         self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm,
                                         not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
-
+                                        
+        # define discriminators
+        self.netD_A = networks.define_D(opt.output_nc, opt.ndf, opt.netD,
+                                        opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
+        self.netD_B = networks.define_D(opt.input_nc, opt.ndf, opt.netD,
+                                        opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
+        '''
         if self.isTrain:  # define discriminators
-            self.netD_A = networks.define_D(opt.output_nc, opt.ndf, opt.netD,
+            self.netD_A = networks.define_DShared(shared_base, opt.output_nc, opt.ndf, opt.netD,
                                             opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
-            self.netD_B = networks.define_D(opt.input_nc, opt.ndf, opt.netD,
+            self.netD_B = networks.define_DShared(shared_base, opt.input_nc, opt.ndf, opt.netD,
                                             opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
+
+
+        ######################### END OF DANGER ZONE 2 ##################################
 
         if self.isTrain:
             if opt.lambda_identity > 0.0:  # only works when input and output images have the same number of channels
